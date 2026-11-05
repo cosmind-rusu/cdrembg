@@ -222,11 +222,32 @@ Processing resizes RGB to 1024x1024 for IS-Net (320x320 for U2-Net) with bilinea
 
 3. Leave `PORT` to Railway. Docker supplies the model/library paths. No volume or startup download is needed.
 
-4. Choose memory resources based on the measurements above. For U2NetP, change the Dockerfile's `ARG MODEL=isnet-general-use` to `ARG MODEL=u2netp` and commit before deployment.
+4. Choose memory resources based on the measurements above. In the service's **Variables** tab, set `MODEL` to select the model (see below), then apply the changes and rebuild/redeploy the service. No Dockerfile edit is required.
 
 5. Generate a public domain under the service's networking settings. Visit `/` and test `/api/remove`.
 
 6. The configured deployment health check calls `/health` with a 180-second startup allowance. Listening starts only after model initialization succeeds. Inspect JSON logs and Railway memory metrics during real uploads.
+
+### Select a model with Railway variables
+
+The deployed model is configured through Railway service variables. Set **`MODEL`** to one of the following values:
+
+| Railway variable | Model | Intended use |
+|---|---|---|
+| `MODEL=isnet-general-use` | IS-Net, 1024x1024 | Default for general images and photographs |
+| `MODEL=isnet-anime` | IS-Net Anime, 1024x1024 | Illustrations, anime, and drawn characters |
+| `MODEL=u2net` | U2-Net, 320x320 | Lower-resolution alternative |
+| `MODEL=u2netp` | U2NetP, 320x320 | Smallest model, with a quality tradeoff |
+
+For example, for illustrated characters, add this variable in Railway:
+
+```env
+MODEL=isnet-anime
+```
+
+Railway passes this variable to the Dockerfile's declared `ARG MODEL` during the build. The build downloads the selected weights, and the final image sets `MODEL_NAME` automatically to match. If `MODEL` is omitted, the Dockerfile uses `isnet-anime`, the best-performing option tested on the supplied illustration. `railway.json` explicitly selects this Dockerfile; model variables are configured in Railway's Variables tab, not inside `railway.json`. See [Railway's build-time variable documentation](https://docs.railway.com/builds/dockerfiles#using-variables-at-build-time).
+
+**Changing `MODEL` requires rebuilding the image and redeploying**, because each image contains only the selected model. A restart of an existing image does not download different weights. Normally, leave `MODEL_NAME` and `MODEL_PATH` unset in Railway: the image supplies matching values. If those variables were manually overridden, remove the overrides or ensure they match the selected weights. Changing `MODEL_NAME` alone only changes the processing profile; it does not replace the model file.
 
 
 

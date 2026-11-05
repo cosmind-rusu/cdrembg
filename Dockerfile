@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG MODEL=isnet-general-use
+ARG MODEL=isnet-anime
 FROM golang:1.25-bookworm AS build
 ARG TARGETARCH
 ARG MODEL
