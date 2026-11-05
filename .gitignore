@@ -1,0 +1,7 @@
+/models/
+/lib/
+/cdrembg
+/cdrembg.exe
+*.png
+.env
+.tmp/

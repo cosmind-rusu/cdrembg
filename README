@@ -1,1 +1,302 @@
-cdrembg alternative to removebg
+# cdrembg
+
+
+
+An open, self-hosted alternative to [remove.bg](https://www.remove.bg/) for removing image backgrounds, with a web interface and REST API. Built in Go, cdrembg uses IS-Net by default and the CPU ONNX Runtime. The HTML, CSS, and JavaScript UI is embedded in the executable. Images are processed on your own server, stay in memory, and are returned as transparent PNGs.
+
+
+
+## Project structure
+
+
+
+```text
+
+cdrembg/
+
+├── main.go                         # HTTP server, admission control, shutdown
+
+├── main_test.go                    # API validation and concurrency tests
+
+├── internal/processor/
+
+│   ├── processor.go                # Model session and image pipeline
+
+│   └── processor_test.go           # Normalization, alpha, decoding tests
+
+├── static/index.html               # Embedded UI, vanilla JS, Tailwind CDN
+
+├── go.mod
+
+├── go.sum
+
+├── Dockerfile
+
+├── railway.json
+
+├── .dockerignore
+
+├── .gitignore
+
+└── README.md
+
+```
+
+
+
+## Run with Docker
+
+
+
+Requires Docker with Linux containers. The image supports Linux amd64 and arm64 using native builds (or Buildx emulation). Both the runtime and model are fetched at **build time**; startup requires no network connection.
+
+
+
+```sh
+
+docker build -t cdrembg .
+
+docker run --rm --name cdrembg -p 8080:8080 --memory=3g --memory-swap=3g cdrembg
+
+```
+
+
+
+Open http://localhost:8080. The container runs as an unprivileged numeric user. It also supports `--read-only --cap-drop=ALL --security-opt=no-new-privileges`.
+
+
+
+**Model selection:** IS-Net (`isnet-general-use`, 1024x1024) is now the default. It preserves finer contours than the previous 320x320 U2-Net pipeline on the supplied illustration. The input normalization is model-specific: IS-Net uses mean 0.5 and standard deviation 1; U2-Net uses ImageNet statistics.
+
+For illustrations, an optional `isnet-anime` profile uses 1024x1024 input and its own channel means (0.485, 0.456, 0.406) with unit standard deviation, matching rembg's reference implementation. Build it with `docker build --build-arg MODEL=isnet-anime -t cdrembg:anime .`. Treat it as a specialized alternative, not a universal upgrade for photographs. The earlier BiRefNet Lite export also OOM-killed the local CPU container with a 4 GiB limit; increasing the deployment from 3 to 4 GiB alone does not make that export suitable.
+
+
+
+```sh
+
+# Default, higher-resolution segmentation
+
+ docker build -t cdrembg .
+
+# Previous model, if lower latency matters
+
+ docker build --build-arg MODEL=u2net -t cdrembg:u2net .
+
+# Smallest model, with a quality tradeoff
+
+ docker build --build-arg MODEL=u2netp -t cdrembg:small .
+
+```
+
+
+
+Docker sets `MODEL_NAME` to the selected build argument and stores the chosen weights at `/app/models/model.onnx`. Do not change `MODEL_NAME` alone to switch models: rebuild with the corresponding weights, or mount matching weights and set both `MODEL_NAME` and `MODEL_PATH`.
+
+
+
+**Memory sizing:** configure Railway with up to 3 GB as the deployment budget. Local IS-Net inference on the supplied 840x859 illustration took about 4.3 seconds with a peak of 782,925,824 bytes (747 MiB). These figures are a smoke test, not an upper bound. Monitor startup, repeated images, and maximum-size uploads on your actual host. The 1024x1024 BiRefNet Lite export was also evaluated, but was OOM-killed at 3 GiB; it is not included as a supported deployment option. U2NetP is available for smaller hosts but is not the quality upgrade.
+
+
+
+The server admits only **one upload/inference/encoding operation at a time**. Other requests receive `503` immediately, without buffering their uploads or queuing images. The processor reuses its tensors, selects only the first segmentation output, uses sequential CPU execution with one thread by default, and disables the CPU arena and memory pattern caching. These settings favor memory over throughput. `GOMEMLIMIT=128MiB` is a soft Go heap target, **not** a limit on native ONNX allocations. `MALLOC_ARENA_MAX=2` bounds glibc arena proliferation.
+
+
+
+## Local development
+
+
+
+Requires Go 1.25.1+, a C compiler (CGO), and ONNX Runtime **1.22.0** for your OS/architecture. `onnxruntime_go v1.22.0` uses that native C API version. Do not substitute an arbitrary runtime version.
+
+
+
+Linux amd64 setup:
+
+
+
+```sh
+
+mkdir -p lib models
+
+curl -fL --retry 5 https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-linux-x64-1.22.0.tgz -o /tmp/onnxruntime.tgz
+
+tar -xzf /tmp/onnxruntime.tgz -C /tmp
+
+cp -a /tmp/onnxruntime-linux-x64-1.22.0/lib/. lib/
+
+curl -fL --retry 5 https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx -o models/isnet-general-use.onnx
+
+echo 'fc16ebd8b0c10d971d3513d564d01e29  models/isnet-general-use.onnx' | md5sum -c -
+
+go mod download
+
+CGO_ENABLED=1 go run .
+
+```
+
+
+
+For Windows, install MinGW-w64 GCC for CGO, download the Windows x64 ONNX Runtime 1.22.0 archive, and point `ONNX_RUNTIME_LIBRARY_PATH` at its `onnxruntime.dll`. For macOS use its corresponding `.dylib`. Docker avoids platform-specific compiler setup.
+
+
+
+```powershell
+
+$env:CGO_ENABLED = '1'
+
+$env:ONNX_RUNTIME_LIBRARY_PATH = 'C:\path\to\onnxruntime.dll'
+
+$env:MODEL_NAME = 'isnet-general-use'
+
+$env:MODEL_PATH = 'models/isnet-general-use.onnx'
+
+go run .
+
+```
+
+
+
+| Variable | Default outside Docker | Purpose |
+
+|---|---|---|
+
+| `PORT` | `8080` | Listen on all interfaces; valid range 1–65535 |
+
+| `MODEL_NAME` | `isnet-general-use` | `isnet-general-use`, `u2net`, or `u2netp` |
+
+| `MODEL_PATH` | `models/<MODEL_NAME>.onnx` | Local weights matching the selected model |
+
+| `ONNX_RUNTIME_LIBRARY_PATH` | `lib/libonnxruntime.so.1.22.0` | Native shared library |
+
+| `ORT_THREADS` | `1` | CPU intra-op threads, 1–8 |
+
+| `GOMEMLIMIT` | Go default | Docker sets `128MiB`; excludes native memory |
+
+
+
+## REST API
+
+
+
+```sh
+
+curl --fail-with-body http://localhost:8080/health
+
+curl --fail-with-body -F 'file=@photo.jpg' http://localhost:8080/api/remove -o cutout.png
+
+```
+
+
+
+| Route | Response |
+
+|---|---|
+
+| `GET /` | Embedded web interface |
+
+| `GET /health` | `200`, JSON `{"status":"ok"}` |
+
+| `POST /api/remove` | Multipart `file`; `200 image/png` with attachment disposition |
+
+
+
+Accepts one JPEG or PNG, at most **10 MiB** and **4,000,000 decoded pixels**. MIME labels and filenames are not trusted: the decoder validates image content and dimensions before allocating the full image. The request body allows an additional 64 KiB for multipart framing. Output retains source dimensions and multiplies the predicted alpha by existing alpha.
+
+
+
+Errors use `{"error":"message"}`: `400` malformed/missing/duplicate file, `413` upload too large, `422` unsupported/corrupt image or excessive dimensions, `503` busy (`Retry-After: 5`), `500` internal failure. Unknown routes and unsupported methods use standard net/http responses. Clients should retry `503` with backoff; the UI allows selecting the file again.
+
+
+
+Processing resizes RGB to 1024x1024 for IS-Net (320x320 for U2-Net) with bilinear sampling, creates a float32 NCHW tensor, applies image-maximum and model-specific channel normalization, runs the first segmentation output, normalizes its mask, and bilinearly expands the mask. Constant and non-finite predictions are handled explicitly. This implementation is not pixel-identical to rembg's Lanczos resizing. JPEG EXIF orientation and ICC profiles are not applied; rotate/export upright, sRGB images before uploading. PNG output excludes source metadata. Segmentation can miss fine hair, translucent material, or low-contrast edges.
+
+
+
+## Railway deployment via GitHub
+
+
+
+1. Push this project, including `go.sum`, `Dockerfile`, and `railway.json`, to your GitHub repository. Do not commit model files or native libraries.
+
+2. In Railway, create a project and choose **Deploy from GitHub repo**; select the repository. The committed configuration selects the Dockerfile builder.
+
+3. Leave `PORT` to Railway. Docker supplies the model/library paths. No volume or startup download is needed.
+
+4. Choose memory resources based on the measurements above. For U2NetP, change the Dockerfile's `ARG MODEL=isnet-general-use` to `ARG MODEL=u2netp` and commit before deployment.
+
+5. Generate a public domain under the service's networking settings. Visit `/` and test `/api/remove`.
+
+6. The configured deployment health check calls `/health` with a 180-second startup allowance. Listening starts only after model initialization succeeds. Inspect JSON logs and Railway memory metrics during real uploads.
+
+
+
+Railway's deployment health check is a startup readiness check, not continuous monitoring. It does not exercise inference; monitor API failures separately. SIGTERM stops accepting connections and drains active requests before freeing the native session. Native inference in this wrapper cannot be canceled mid-run, including when a client disconnects; the platform's termination grace period is the final bound. HTTP reads time out after 30 seconds and writes after 180 seconds; these socket deadlines do not interrupt native computation.
+
+
+
+The API is deliberately unauthenticated for the self-hosted UI. Put authentication, rate limits, TLS, and connection limits at an ingress proxy if exposing it to untrusted users; the processing gate bounds compute concurrency but does not prevent denial of service. Do not embed a private API key in browser JavaScript.
+
+
+
+Tailwind is loaded from the requested CDN with a pinned package version. Essential layout CSS is also embedded, so the interface remains usable without the CDN. Tailwind's browser runtime is intended for development; for a deployment that requires no external scripts, compile Tailwind ahead of time and embed the result instead.
+
+
+
+## Checks
+
+
+
+```sh
+
+go test ./...
+
+go test -race ./...
+
+go vet ./...
+
+go build .
+
+```
+
+
+
+Unit tests require a CGO compiler but do not load the runtime or weights. They cover preprocessing, existing alpha, constant/non-finite masks, dimension limits, API errors, upload limits, and concurrent admission. Docker runs tests and vet during the build. Before deployment, run actual model inference with representative images and monitor native peak RSS; unit tests cannot establish segmentation quality or native memory requirements.
+
+
+
+### Verification performed
+
+IS-Net Anime was tested on the supplied illustration under a 4 GiB limit: 4.26 seconds, peak memory 763,285,504 bytes (728 MiB). Bright neutral background pixels retaining alpha above 127 fell from 3,825 with general IS-Net to zero with Anime. This narrow checkerboard diagnostic does not measure foreground preservation or general segmentation quality. The generated comparison is `vilgax-anime.png`. BiRefNet Lite was OOM-killed at both 3 and 4 GiB with the tested CPU export/settings.
+
+For the current IS-Net default, the final Docker image passed unit tests, `go vet`, and compilation. It processed the supplied 840x859 illustration and three consecutive 2000x2000 synthetic PNGs in a read-only container limited to 3 GiB without swap. Peak cgroup memory was **964,161,536 bytes (about 920 MiB)**; requests took roughly 4.5-4.8 seconds on this local CPU. Output dimensions and alpha were preserved. On the illustration, bright neutral source pixels retaining alpha above 127 fell from 13,686 with U2-Net to 3,825 with IS-Net. This is a heuristic for this baked-in checkerboard, not a segmentation accuracy score or a general quality guarantee.
+
+
+
+For the previous U2-Net default, on Linux amd64 in Docker Desktop, the production image built successfully; unit tests, `go vet`, and `go test -race ./...` passed. Full U2-Net processed six consecutive 2000×2000 synthetic PNG uploads in a read-only container limited to 1 GiB with swap disabled. The output was 2000×2000 RGBA with alpha spanning 0–255. The cgroup `memory.peak` reached **729,632,768 bytes (about 696 MiB)**; the container remained healthy and was not OOM-killed. This is a smoke test, not a worst-case memory guarantee or a visual segmentation-quality benchmark. U2NetP and arm64 were not runtime-tested. JavaScript passed `node --check`; browser visual and interaction verification was unavailable in the test environment.
+
+
+
+## Upstream references
+
+
+
+- [onnxruntime_go v1.22.0 compatibility](https://github.com/yalue/onnxruntime_go/blob/v1.22.0/README.md)
+
+- [ONNX Runtime 1.22.0 releases](https://github.com/microsoft/onnxruntime/releases/tag/v1.22.0)
+
+- [IS-Net source and model information](https://github.com/xuebinqin/DIS)
+
+- [rembg IS-Net preprocessing and checksum](https://github.com/danielgatis/rembg/blob/main/rembg/sessions/dis_general_use.py)
+
+- [U2-Net source and model information](https://github.com/xuebinqin/U-2-Net)
+
+- [rembg U2-Net model URL, checksum, normalization](https://github.com/danielgatis/rembg/blob/main/rembg/sessions/u2net.py)
+
+- [rembg U2NetP model checksum](https://github.com/danielgatis/rembg/blob/main/rembg/sessions/u2netp.py)
+
+- [Railway health checks](https://docs.railway.com/deployments/healthchecks)
+
+
+
+Model checks use upstream's MD5 values for download integrity, not cryptographic provenance. Native libraries are fetched over HTTPS from a versioned Microsoft release. Review upstream code, model, and dataset terms before redistributing; the image retains ONNX Runtime notices.
+

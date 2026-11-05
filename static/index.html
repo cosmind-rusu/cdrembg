@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+ <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+ <meta name="color-scheme" content="light"><title>cdrembg · Background remover</title>
+ <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.18"></script>
+ <style>
+ :root{font-family:system-ui,-apple-system,sans-serif;color:#18251f;background:#f6f7f4}*{box-sizing:border-box}body{margin:0}main,header,footer{max-width:1120px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #d5ddd7}h1{font-size:clamp(2rem,5vw,3.6rem);font-weight:600;letter-spacing:-.045em;line-height:1.1;margin:30px 0 16px}p{line-height:1.6;color:#526158}button,.download{font:inherit;min-height:46px;border-radius:6px;padding:12px 22px;font-weight:600;cursor:pointer}button{background:#17603e;color:white;border:1px solid #17603e}button:hover{background:#10492e}button:disabled{opacity:.6;cursor:wait}:focus-visible{outline:3px solid #22784c;outline-offset:4px}[hidden]{display:none!important}.intro{max-width:690px;margin-bottom:32px}.drop{border:1.5px dashed #94a89b;background:white;padding:32px;text-align:center;border-radius:8px}.drop.drag{border-color:#17603e;background:#eaf3ec}.drop p{margin:12px 0 0;font-size:14px}.previews{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin:28px 0}figure{margin:0;min-width:0}figcaption{display:flex;justify-content:space-between;margin-bottom:10px;font-size:14px;font-weight:600}.canvas{height:360px;display:flex;align-items:center;justify-content:center;border:1px solid #d5ddd7;border-radius:6px;overflow:hidden;background:#edf0eb}.checker{background-color:#fff;background-image:linear-gradient(45deg,#e4e9e3 25%,transparent 25%),linear-gradient(-45deg,#e4e9e3 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#e4e9e3 75%),linear-gradient(-45deg,transparent 75%,#e4e9e3 75%);background-size:24px 24px;background-position:0 0,0 12px,12px -12px,-12px 0}.canvas img{width:100%;height:100%;object-fit:contain}.empty{background:#f6f7f4e8;padding:12px 18px;font-size:14px;color:#526158}.actions{display:flex;align-items:center;justify-content:space-between;gap:20px;min-height:52px}.download{background:#17603e;color:#fff;text-decoration:none;display:inline-flex;align-items:center}.download:hover{background:#10492e}#error{color:#842c22;background:#fff0ed;border-left:3px solid #ad392b;padding:16px;margin:20px 0}#status{font-size:14px}footer{border-top:1px solid #d5ddd7;margin-top:32px;color:#526158;font-size:13px}.filename{max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#526158;font-weight:400}@media(max-width:640px){.previews{grid-template-columns:1fr}.canvas{height:280px}main,header,footer{padding:20px}.actions{align-items:flex-start;flex-direction:column}.drop{padding:24px 12px}header span{font-size:12px}}
+ </style>
+</head>
+<body>
+ <header><strong>cdrembg<span style="color:#17603e">.</span></strong><span>Self-hosted background removal</span></header>
+ <main>
+  <section class="intro"><h1>Keep the subject.<br>Clear the background.</h1><p>Drop in a photo, compare the result, and download a transparent PNG at its original dimensions.</p></section>
+  <section id="drop" class="drop" aria-label="Upload an image">
+   <input id="file" type="file" accept="image/jpeg,image/png" hidden>
+   <button id="choose" type="button">Choose an image</button>
+   <p>or drop one here · JPEG or PNG · Up to 10 MiB / 4 megapixels</p>
+  </section>
+  <div id="error" role="alert" hidden></div>
+  <section class="previews" aria-label="Image comparison">
+   <figure><figcaption>Original <span id="filename" class="filename"></span></figcaption><div class="canvas"><span id="beforeEmpty" class="empty">Your photo appears here</span><img id="before" alt="Original uploaded image" hidden></div></figure>
+   <figure><figcaption>Background removed <span>PNG</span></figcaption><div id="result" class="canvas checker" aria-busy="false"><span id="afterEmpty" class="empty">Ready for a new background</span><img id="after" alt="Image with background removed" hidden></div></figure>
+  </section>
+  <div class="actions"><p id="status" role="status" aria-live="polite">Choose an image to begin.</p><a id="download" class="download" download="background-removed.png" hidden>Download PNG</a></div>
+ </main>
+ <footer>Images are processed on this server and are not saved to disk.</footer>
+ <script>
+ 'use strict';
+ const $=id=>document.getElementById(id);
+ let busy=false, originalURL=null, resultURL=null;
+ const fail=message=>{$('error').textContent=message;$('error').hidden=false;};
+ $('choose').addEventListener('click',()=>$('file').click());
+ $('file').addEventListener('change',()=>{if($('file').files.length)processFile($('file').files[0]);$('file').value='';});
+ for(const type of ['dragenter','dragover'])$('drop').addEventListener(type,event=>{event.preventDefault();if(!busy)$('drop').classList.add('drag');});
+ for(const type of ['dragleave','drop'])$('drop').addEventListener(type,event=>{event.preventDefault();$('drop').classList.remove('drag');});
+ $('drop').addEventListener('drop',event=>{if(busy)return;if(event.dataTransfer.files.length!==1){fail('Drop one image at a time.');return;}processFile(event.dataTransfer.files[0]);});
+ window.addEventListener('dragover',event=>event.preventDefault());
+ window.addEventListener('drop',event=>event.preventDefault());
+ async function processFile(file){
+  if(busy)return;
+  $('error').hidden=true;
+  if(!['image/jpeg','image/png'].includes(file.type)){fail('Please choose a JPEG or PNG image.');return;}
+  if(!file.size||file.size>10*1024*1024){fail('Choose an image smaller than 10 MiB.');return;}
+  busy=true;$('choose').disabled=true;$('choose').textContent='Processing…';$('result').setAttribute('aria-busy','true');
+  if(originalURL)URL.revokeObjectURL(originalURL);if(resultURL)URL.revokeObjectURL(resultURL);resultURL=null;
+  $('after').hidden=true;$('after').removeAttribute('src');$('download').hidden=true;$('download').removeAttribute('href');$('afterEmpty').hidden=false;$('afterEmpty').textContent='Removing the background…';
+  originalURL=URL.createObjectURL(file);$('before').src=originalURL;$('before').hidden=false;$('beforeEmpty').hidden=true;$('filename').textContent=file.name;
+  $('status').textContent='Processing your image. This may take a little while.';
+  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),170000);
+  try{
+   const data=new FormData();data.append('file',file);
+   const response=await fetch('/api/remove',{method:'POST',body:data,signal:controller.signal});
+   if(!response.ok){let message='Processing failed. Please try again.';try{message=(await response.json()).error||message;}catch{}throw new Error(message);}
+   if(!response.headers.get('content-type')?.startsWith('image/png'))throw new Error('The server returned an unexpected response.');
+   resultURL=URL.createObjectURL(await response.blob());$('after').src=resultURL;$('after').hidden=false;$('afterEmpty').hidden=true;
+   $('download').href=resultURL;$('download').download=(file.name.replace(/\.[^.]*$/,'')||'image')+'-no-background.png';$('download').hidden=false;
+   $('status').textContent='Done. Your transparent PNG is ready.';
+  }catch(error){fail(error.name==='AbortError'?'Processing timed out. The server may still be finishing; try again shortly.':error.message);$('status').textContent='Choose the image again to retry.';$('afterEmpty').textContent='No result yet';}
+  finally{clearTimeout(timeout);busy=false;$('choose').disabled=false;$('choose').textContent='Choose another image';$('result').setAttribute('aria-busy','false');}
+ }
+ </script>
+</body>
+</html>
