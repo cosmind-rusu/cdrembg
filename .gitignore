@@ -2,6 +2,6 @@
 /lib/
 /cdrembg
 /cdrembg.exe
-*.png
+/*.png
 .env
 .tmp/

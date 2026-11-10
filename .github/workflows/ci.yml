@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted Go files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run pure-Go unit tests and benchmarks
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go vet ./...
+          go test -v ./...
+          go test -bench=. -benchmem -run=^$ ./internal/processor
+
+      - name: Run CGO race detector and binary build
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go vet ./...
+          go test -race ./...
+          go build -trimpath -ldflags="-s -w" -o /tmp/cdrembg .
+
+      - name: Build hardened Docker image and run E2E inference check
+        run: |
+          docker build --build-arg MODEL=u2netp -t cdrembg:ci .
+          docker run -d --rm --name cdrembg-ci \
+            --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            -p 127.0.0.1:8080:8080 cdrembg:ci
+          trap 'docker stop cdrembg-ci || true' EXIT
+
+          for i in $(seq 1 30); do
+            if docker exec cdrembg-ci /app/cdrembg -healthcheck; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec cdrembg-ci /app/cdrembg -healthcheck
+
+          python3 - <<'PY'
+          import struct, zlib
+          def chunk(t, d):
+              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+          raw = b"".join(b"\x00" + b"\xc8\x40\x40\xff" * 32 for _ in range(32))
+          png = (
+              b"\x89PNG\r\n\x1a\n"
+              + chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 6, 0, 0, 0))
+              + chunk(b"IDAT", zlib.compress(raw))
+              + chunk(b"IEND", b"")
+          )
+          open("/tmp/in.png", "wb").write(png)
+          PY
+          curl -fsS -F 'file=@/tmp/in.png' http://127.0.0.1:8080/api/remove -o /tmp/out.png
+          file /tmp/out.png | grep -q "PNG image data, 32 x 32"

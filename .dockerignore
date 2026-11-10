@@ -1,8 +1,12 @@
 .git
+.github
 .tmp
+docs
 models
 lib
 *.onnx
 *.png
 *.exe
 .env
+README.md
+LICENSE
