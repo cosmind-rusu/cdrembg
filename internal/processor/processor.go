@@ -26,10 +26,13 @@ var (
 
 // Config configures the native ONNX Runtime session and model profile.
 type Config struct {
-	LibraryPath string
-	ModelPath   string
-	ModelName   string
-	Threads     int
+	LibraryPath  string
+	ModelDir     string
+	ModelPath    string
+	CacheDir     string
+	ModelName    string
+	Threads      int
+	AutoDownload bool
 }
 
 type sessionBackend interface {
@@ -37,41 +40,6 @@ type sessionBackend interface {
 	outputData() []float32
 	run() error
 	close() error
-}
-
-type modelProfile struct {
-	name  string
-	size  int
-	means [3]float32
-	stds  [3]float32
-}
-
-func profileFor(name string) (modelProfile, error) {
-	switch name {
-	case "isnet-general-use":
-		return modelProfile{
-			name:  name,
-			size:  1024,
-			means: [3]float32{0.5, 0.5, 0.5},
-			stds:  [3]float32{1, 1, 1},
-		}, nil
-	case "isnet-anime":
-		return modelProfile{
-			name:  name,
-			size:  1024,
-			means: [3]float32{0.485, 0.456, 0.406},
-			stds:  [3]float32{1, 1, 1},
-		}, nil
-	case "u2net", "u2netp":
-		return modelProfile{
-			name:  name,
-			size:  320,
-			means: [3]float32{0.485, 0.456, 0.406},
-			stds:  [3]float32{0.229, 0.224, 0.225},
-		}, nil
-	default:
-		return modelProfile{}, fmt.Errorf("unsupported MODEL_NAME %q (use isnet-general-use, isnet-anime, u2net, or u2netp)", name)
-	}
 }
 
 type span1D struct {
@@ -123,7 +91,7 @@ type Processor struct {
 // the configured model profile.
 func New(cfg Config) (*Processor, error) {
 	if cfg.ModelName == "" {
-		cfg.ModelName = "isnet-general-use"
+		cfg.ModelName = "isnet-anime"
 	}
 	if cfg.Threads < 1 {
 		cfg.Threads = 1
@@ -132,6 +100,12 @@ func New(cfg Config) (*Processor, error) {
 	if err != nil {
 		return nil, err
 	}
+	resolvedPath, err := resolveModelPath(cfg, profile, "")
+	if err != nil {
+		return nil, err
+	}
+	cfg.ModelPath = resolvedPath
+
 	backend, err := newBackend(cfg, profile.size)
 	if err != nil {
 		return nil, err

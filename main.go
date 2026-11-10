@@ -61,12 +61,14 @@ func run() error {
 		return errors.New("ORT_THREADS must be between 1 and 16")
 	}
 
-	modelName := env("MODEL_NAME", "isnet-general-use")
+	modelName := env("MODEL", env("MODEL_NAME", "isnet-anime"))
 	p, err := processor.New(processor.Config{
-		LibraryPath: env("ONNX_RUNTIME_LIBRARY_PATH", "lib/libonnxruntime.so.1.22.0"),
-		ModelPath:   env("MODEL_PATH", "models/"+modelName+".onnx"),
-		ModelName:   modelName,
-		Threads:     threads,
+		LibraryPath:  env("ONNX_RUNTIME_LIBRARY_PATH", "lib/libonnxruntime.so.1.22.0"),
+		ModelDir:     env("MODEL_DIR", "models"),
+		ModelPath:    os.Getenv("MODEL_PATH"),
+		ModelName:    modelName,
+		Threads:      threads,
+		AutoDownload: true,
 	})
 	if err != nil {
 		return err

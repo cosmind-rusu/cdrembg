@@ -3,13 +3,19 @@ package processor
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -235,6 +241,52 @@ func TestJPEGEXIFOrientation(t *testing.T) {
 
 	if err := proc.Close(); err != nil || !mock.closed {
 		t.Fatalf("expected backend closed cleanly: err=%v closed=%v", err, mock.closed)
+	}
+}
+
+func TestResolveModelPath(t *testing.T) {
+	modelDir := t.TempDir()
+	cacheDir := t.TempDir()
+
+	// 1. Baked-in file in ModelDir is used directly with zero HTTP traffic.
+	bakedPath := filepath.Join(modelDir, "isnet-anime.onnx")
+	if err := os.WriteFile(bakedPath, []byte("baked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	anime, _ := profileFor("isnet-anime")
+	got, err := resolveModelPath(Config{ModelDir: modelDir, CacheDir: cacheDir, AutoDownload: false}, anime, "http://127.0.0.1:1")
+	if err != nil || got != bakedPath {
+		t.Fatalf("expected baked path %q, got %q (err=%v)", bakedPath, got, err)
+	}
+
+	// 2. Runtime model override downloads into CacheDir and verifies SHA-256.
+	payload := []byte("synthetic-onnx-weights")
+	sum := sha256.Sum256(payload)
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	custom := modelProfile{name: "custom", filename: "custom.onnx", sha256: hex.EncodeToString(sum[:])}
+	got, err = resolveModelPath(Config{ModelDir: modelDir, CacheDir: cacheDir, AutoDownload: true}, custom, srv.URL)
+	if err != nil || hits != 1 {
+		t.Fatalf("expected verified download on first call, got path=%q hits=%d err=%v", got, hits, err)
+	}
+	// Second call hits verified cache without another HTTP request.
+	got2, err := resolveModelPath(Config{ModelDir: modelDir, CacheDir: cacheDir, AutoDownload: true}, custom, srv.URL)
+	if err != nil || got2 != got || hits != 1 {
+		t.Fatalf("expected cached hit without network, got path=%q hits=%d err=%v", got2, hits, err)
+	}
+
+	// 3. Corrupted payload with mismatched SHA-256 is rejected and not left cached.
+	bad := modelProfile{name: "bad", filename: "bad.onnx", sha256: "0000000000000000000000000000000000000000000000000000000000000000"}
+	if _, err := resolveModelPath(Config{ModelDir: modelDir, CacheDir: cacheDir, AutoDownload: true}, bad, srv.URL); err == nil {
+		t.Fatal("expected SHA-256 mismatch error")
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "bad.onnx")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected corrupt file not to exist at destination, stat err=%v", err)
 	}
 }
 
